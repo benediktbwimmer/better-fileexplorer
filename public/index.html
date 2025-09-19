@@ -27,11 +27,14 @@
     </header>
     <main class="layout">
       <section class="panel tree-panel">
-        <div class="panel-header">Filesystem</div>
+        <div class="panel-header">
+          <span class="panel-title">Filesystem</span>
+          <span id="filesystemMeta" class="panel-meta hidden"></span>
+        </div>
         <div id="tree" class="tree"></div>
       </section>
       <section class="panel details-panel">
-        <div class="panel-header">Details</div>
+        <div class="panel-header"><span class="panel-title">Details</span></div>
         <div id="details">
           <div id="entryMeta" class="entry-meta empty">Select a file or directory.</div>
           <div id="fileSection" class="file-section hidden">
@@ -68,7 +71,7 @@
             <div id="tagFeedback" class="feedback"></div>
           </div>
         </div>
-        <div class="panel-header">Search Results</div>
+        <div class="panel-header"><span class="panel-title">Search Results</span></div>
         <div id="searchResults" class="results"></div>
       </section>
     </main>

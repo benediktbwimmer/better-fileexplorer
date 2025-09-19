@@ -471,7 +471,7 @@ components:
               description: Immediate child entries sorted by type then name.
     TreeResponse:
       type: object
-      required: [root, rootName, generatedAt]
+      required: [root, rootName, rootPath, generatedAt]
       properties:
         root:
           oneOf:
@@ -481,6 +481,9 @@ components:
         rootName:
           type: string
           description: Display name for the root directory being monitored.
+        rootPath:
+          type: string
+          description: Absolute path of the root directory being monitored.
         generatedAt:
           type: integer
           format: int64
