@@ -159,6 +159,60 @@ components:
         value:
           type: string
           description: Tag value.
+    GitRemote:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Remote name as defined in git configuration.
+        fetchUrl:
+          type: string
+          nullable: true
+          description: URL used for fetch operations when available.
+        pushUrl:
+          type: string
+          nullable: true
+          description: URL used for push operations when available.
+    GitMetadata:
+      type: object
+      required: [isRepo]
+      properties:
+        isRepo:
+          type: boolean
+          description: Indicates whether the directory is the root of a git repository.
+        detectedAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Millisecond timestamp when metadata was last refreshed.
+        currentBranch:
+          type: string
+          nullable: true
+          description: Current branch name or short commit hash when in detached HEAD.
+        commitCount:
+          type: integer
+          format: int64
+          nullable: true
+          description: Total number of commits reachable from the repository.
+        branchCount:
+          type: integer
+          format: int64
+          nullable: true
+          description: Count of local branches reported by git.
+        remoteCount:
+          type: integer
+          format: int64
+          nullable: true
+          description: Number of configured remotes. When omitted, derive from the `remotes` array.
+        isLocalOnly:
+          type: boolean
+          description: True when the repository has no configured remotes.
+        remotes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GitRemote'
+          description: Remote definitions reported by `git remote -v`.
     Entry:
       type: object
       required: [path, name, parent_path, type, size, mtime, extension, depth]
@@ -192,6 +246,11 @@ components:
         depth:
           type: integer
           description: Depth from the root (root is 0).
+        git:
+          oneOf:
+            - $ref: '#/components/schemas/GitMetadata'
+            - type: 'null'
+          description: Git metadata for directories; null for files.
     EntryWithTags:
       allOf:
         - $ref: '#/components/schemas/Entry'

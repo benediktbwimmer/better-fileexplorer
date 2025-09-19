@@ -264,6 +264,35 @@ body {
   word-break: break-all;
 }
 
+.git-meta {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(24, 30, 54, 0.08);
+  display: grid;
+  gap: 0.3rem;
+}
+
+.git-meta .git-summary {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.git-meta .git-stats,
+.git-meta .git-remotes,
+.git-meta .git-remote-item {
+  font-size: 0.85rem;
+  color: var(--text-soft);
+}
+
+.git-meta .git-remote-list {
+  margin: 0.2rem 0 0 0;
+  padding-left: 1.1rem;
+}
+
+.git-meta .git-remote-list li {
+  margin: 0.1rem 0;
+}
+
 .entry-meta.empty {
   color: var(--text-soft);
 }

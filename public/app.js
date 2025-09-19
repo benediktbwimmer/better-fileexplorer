@@ -69,6 +69,13 @@
     return `${num.toFixed(num >= 10 ? 0 : 1)} ${units[exponent]}`;
   }
 
+  function formatInteger(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return '—';
+    }
+    return value.toLocaleString();
+  }
+
   function collectPaths(node, set) {
     if (!node) return;
     set.add(node.path);
@@ -251,12 +258,79 @@
     els.entryMeta.appendChild(sizeRow);
 
     const timeRow = document.createElement('div');
-    const date = entry.mtime ? new Date(entry.mtime) : null;
-    timeRow.innerHTML = `<strong>Modified:</strong> ${date ? date.toLocaleString() : '—'}`;
-    els.entryMeta.appendChild(timeRow);
+   const date = entry.mtime ? new Date(entry.mtime) : null;
+   timeRow.innerHTML = `<strong>Modified:</strong> ${date ? date.toLocaleString() : '—'}`;
+   els.entryMeta.appendChild(timeRow);
+
+    renderGitMetadata(entry);
 
     els.tagSection.classList.remove('hidden');
     renderTags(entry.tags || []);
+  }
+
+  function renderGitMetadata(entry) {
+    const git = entry && entry.git;
+    if (!entry || entry.type !== 'directory') {
+      return;
+    }
+    const container = document.createElement('div');
+    container.className = 'git-meta';
+
+    const summary = document.createElement('div');
+    summary.className = 'git-summary';
+    if (!git) {
+      summary.innerHTML = '<strong>Git:</strong> Metadata unavailable';
+      container.appendChild(summary);
+      els.entryMeta.appendChild(container);
+      return;
+    }
+
+    if (!git.isRepo) {
+      summary.innerHTML = '<strong>Git:</strong> Not a repository';
+      container.appendChild(summary);
+      els.entryMeta.appendChild(container);
+      return;
+    }
+
+    const branchLabel = git.currentBranch ? git.currentBranch : 'Detached HEAD';
+    summary.innerHTML = `<strong>Git:</strong> ${branchLabel}`;
+    container.appendChild(summary);
+
+    const stats = document.createElement('div');
+    stats.className = 'git-stats';
+    const commitText = formatInteger(git.commitCount);
+    const branchText = formatInteger(git.branchCount);
+    stats.textContent = `Commits: ${commitText} • Branches: ${branchText}`;
+    container.appendChild(stats);
+
+    const remotesBlock = document.createElement('div');
+    remotesBlock.className = 'git-remotes';
+    const remoteList = Array.isArray(git.remotes) ? git.remotes : [];
+    const totalRemotes = typeof git.remoteCount === 'number' ? git.remoteCount : remoteList.length;
+    if (!remoteList.length) {
+      remotesBlock.textContent = git.isLocalOnly ? 'Local only (no remotes)' : 'No remotes reported';
+    } else {
+      remotesBlock.textContent = `Remotes (${formatInteger(totalRemotes)}):`;
+      const ul = document.createElement('ul');
+      ul.className = 'git-remote-list';
+      for (const remote of remoteList) {
+        const li = document.createElement('li');
+        li.className = 'git-remote-item';
+        const fetchUrl = remote.fetchUrl || remote.pushUrl;
+        if (remote.fetchUrl && remote.pushUrl && remote.fetchUrl !== remote.pushUrl) {
+          li.textContent = `${remote.name}: fetch ${remote.fetchUrl}, push ${remote.pushUrl}`;
+        } else if (fetchUrl) {
+          li.textContent = `${remote.name}: ${fetchUrl}`;
+        } else {
+          li.textContent = `${remote.name}: —`;
+        }
+        ul.appendChild(li);
+      }
+      remotesBlock.appendChild(ul);
+    }
+    container.appendChild(remotesBlock);
+
+    els.entryMeta.appendChild(container);
   }
 
   function renderTags(tags) {

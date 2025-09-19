@@ -2,11 +2,17 @@ const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const http = require('http');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const express = require('express');
 const chokidar = require('chokidar');
 const Database = require('better-sqlite3');
 const Fuse = require('fuse.js');
 const { WebSocketServer } = require('ws');
+
+const execFileAsync = promisify(execFile);
+const GIT_COMMAND_TIMEOUT = 5_000;
+const GIT_MAX_BUFFER = 2 * 1024 * 1024;
 
 const WS_OPEN = 1;
 
@@ -78,6 +84,16 @@ db.exec(`
     UNIQUE(entry_path, key, value),
     FOREIGN KEY(entry_path) REFERENCES entries(path) ON DELETE CASCADE
   );
+  CREATE TABLE git_metadata (
+    entry_path TEXT PRIMARY KEY,
+    detected_at INTEGER NOT NULL,
+    current_branch TEXT,
+    commit_count INTEGER,
+    branch_count INTEGER,
+    remote_count INTEGER,
+    remotes TEXT,
+    FOREIGN KEY(entry_path) REFERENCES entries(path) ON DELETE CASCADE
+  );
 `);
 
 const statements = {
@@ -103,7 +119,21 @@ const statements = {
   deleteTag: db.prepare('DELETE FROM tags WHERE entry_path = ? AND key = ? AND value = ?'),
   pathsForTag: db.prepare('SELECT entry_path FROM tags WHERE key = ? AND value = ?'),
   deleteTagsForEntry: db.prepare('DELETE FROM tags WHERE entry_path = ?'),
-  deleteTagsUnder: db.prepare('DELETE FROM tags WHERE entry_path LIKE ?')
+  deleteTagsUnder: db.prepare('DELETE FROM tags WHERE entry_path LIKE ?'),
+  upsertGitMetadata: db.prepare(`
+    INSERT INTO git_metadata (entry_path, detected_at, current_branch, commit_count, branch_count, remote_count, remotes)
+    VALUES (@entry_path, @detected_at, @current_branch, @commit_count, @branch_count, @remote_count, @remotes)
+    ON CONFLICT(entry_path) DO UPDATE SET
+      detected_at = excluded.detected_at,
+      current_branch = excluded.current_branch,
+      commit_count = excluded.commit_count,
+      branch_count = excluded.branch_count,
+      remote_count = excluded.remote_count,
+      remotes = excluded.remotes
+  `),
+  deleteGitMetadata: db.prepare('DELETE FROM git_metadata WHERE entry_path = ?'),
+  allGitMetadata: db.prepare('SELECT * FROM git_metadata'),
+  singleGitMetadata: db.prepare('SELECT * FROM git_metadata WHERE entry_path = ?')
 };
 
 let entryCache = [];
@@ -111,7 +141,11 @@ let entryFuse = new Fuse([], { keys: ['path', 'name'], threshold: 0.3, ignoreLoc
 let tagCache = [];
 let tagFuse = new Fuse([], { keys: ['key', 'value', 'pair'], threshold: 0.3, ignoreLocation: true });
 let tagValuesByKey = new Map();
-const UNSUPPORTED_FS_CODES = new Set(['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EACCES']);
+let gitCacheByPath = new Map();
+const pendingGitMetadataUpdates = new Map();
+let gitBinaryUnavailable = false;
+let gitUnavailableLogged = false;
+const UNSUPPORTED_FS_CODES = new Set(['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EACCES', 'ENAMETOOLONG']);
 const unsupportedPaths = new Set();
 
 function markPathUnsupported(absolutePath) {
@@ -196,6 +230,341 @@ function entryFromStats(relativePath, stats) {
   };
 }
 
+function isNotGitRepositoryError(err) {
+  if (!err) {
+    return false;
+  }
+  const targets = [(err.stderr || ''), (err.stdout || ''), (err.message || '')].join(' ').toLowerCase();
+  return targets.includes('not a git repository') || targets.includes('invalid gitfile format');
+}
+
+async function runGitCommand(args, cwd) {
+  if (gitBinaryUnavailable) {
+    const error = new Error('git executable unavailable');
+    error.code = 'GIT_UNAVAILABLE';
+    throw error;
+  }
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      timeout: GIT_COMMAND_TIMEOUT,
+      maxBuffer: GIT_MAX_BUFFER,
+      windowsHide: true,
+      encoding: 'utf8'
+    });
+    gitBinaryUnavailable = false;
+    return stdout;
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      gitBinaryUnavailable = true;
+      if (!gitUnavailableLogged) {
+        console.warn('git is not available on PATH; skipping repository metadata.');
+        gitUnavailableLogged = true;
+      }
+      const unavailable = new Error('git executable unavailable');
+      unavailable.code = 'GIT_UNAVAILABLE';
+      throw unavailable;
+    }
+    // git exists but the command failed; ensure we only log unexpected issues once per process.
+    if (!gitUnavailableLogged && gitBinaryUnavailable) {
+      console.warn('git is not available on PATH; skipping repository metadata.');
+      gitUnavailableLogged = true;
+    }
+    throw err;
+  }
+}
+
+function parseGitRemoteOutput(output) {
+  const remotes = new Map();
+  if (!output) {
+    return [];
+  }
+  const lines = output.split('\n');
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    const parts = line.split(/\s+/);
+    if (parts.length < 2) {
+      continue;
+    }
+    const [name, url, type] = parts;
+    if (!remotes.has(name)) {
+      remotes.set(name, { name, fetchUrl: null, pushUrl: null });
+    }
+    const remote = remotes.get(name);
+    if (type === '(fetch)') {
+      remote.fetchUrl = url;
+    } else if (type === '(push)') {
+      remote.pushUrl = url;
+    } else {
+      if (!remote.fetchUrl) {
+        remote.fetchUrl = url;
+      }
+      if (!remote.pushUrl) {
+        remote.pushUrl = url;
+      }
+    }
+  }
+  return Array.from(remotes.values()).map((remote) => ({
+    name: remote.name,
+    fetchUrl: remote.fetchUrl || null,
+    pushUrl: remote.pushUrl || remote.fetchUrl || null
+  }));
+}
+
+function repoPathFromGitInternal(relativePath) {
+  if (!relativePath) {
+    return null;
+  }
+  if (relativePath === '.git' || relativePath.startsWith('.git/')) {
+    return '/';
+  }
+  const marker = '/.git';
+  const idx = relativePath.indexOf(marker);
+  if (idx === -1) {
+    return null;
+  }
+  const suffix = relativePath.slice(idx + marker.length);
+  if (suffix && suffix[0] !== '/') {
+    return null;
+  }
+  const candidate = relativePath.slice(0, idx);
+  return candidate || '/';
+}
+
+async function gatherGitMetadata(absolutePath, relativePath) {
+  if (!relativePath) {
+    return null;
+  }
+  if (relativePath !== '/' && path.basename(relativePath) === '.git') {
+    return null;
+  }
+  let dirStats;
+  try {
+    dirStats = await fsp.stat(absolutePath);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      statements.deleteGitMetadata.run(relativePath);
+      return null;
+    }
+    throw err;
+  }
+  if (!dirStats.isDirectory()) {
+    statements.deleteGitMetadata.run(relativePath);
+    return null;
+  }
+
+  try {
+    await fsp.stat(path.join(absolutePath, '.git'));
+  } catch (err) {
+    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+      statements.deleteGitMetadata.run(relativePath);
+      return null;
+    }
+    if (err && UNSUPPORTED_FS_CODES.has(err.code)) {
+      return null;
+    }
+    throw err;
+  }
+
+  let repoRootAbsolute;
+  try {
+    repoRootAbsolute = (await runGitCommand(['rev-parse', '--show-toplevel'], absolutePath)).trim();
+  } catch (err) {
+    if (err && err.code === 'GIT_UNAVAILABLE') {
+      throw err;
+    }
+    if (isNotGitRepositoryError(err)) {
+      statements.deleteGitMetadata.run(relativePath);
+      return null;
+    }
+    console.warn(`Failed to resolve git root for ${absolutePath}: ${err.message}`);
+    return null;
+  }
+
+  const repoRelative = normalizeRelative(repoRootAbsolute);
+  if (repoRelative.startsWith('..')) {
+    statements.deleteGitMetadata.run(relativePath);
+    return null;
+  }
+  if (repoRelative !== relativePath) {
+    // Only store metadata for the actual repository root within the monitored tree.
+    statements.deleteGitMetadata.run(relativePath);
+    return null;
+  }
+
+  let currentBranch = null;
+  try {
+    currentBranch = (await runGitCommand(['symbolic-ref', '--quiet', '--short', 'HEAD'], absolutePath)).trim();
+  } catch (err) {
+    if (err && err.code === 'GIT_UNAVAILABLE') {
+      throw err;
+    }
+    if (!isNotGitRepositoryError(err)) {
+      try {
+        const detached = (await runGitCommand(['rev-parse', '--short', 'HEAD'], absolutePath)).trim();
+        currentBranch = detached || null;
+      } catch (fallbackErr) {
+        if (fallbackErr && fallbackErr.code === 'GIT_UNAVAILABLE') {
+          throw fallbackErr;
+        }
+        currentBranch = null;
+      }
+    }
+  }
+
+  let commitCount = null;
+  try {
+    const output = await runGitCommand(['rev-list', '--all', '--count'], absolutePath);
+    const parsed = parseInt(output.trim(), 10);
+    commitCount = Number.isNaN(parsed) ? null : parsed;
+  } catch (err) {
+    if (err && err.code === 'GIT_UNAVAILABLE') {
+      throw err;
+    }
+    commitCount = null;
+  }
+
+  let branchCount = null;
+  try {
+    const output = await runGitCommand(['branch', '--format=%(refname:short)'], absolutePath);
+    branchCount = output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .length;
+  } catch (err) {
+    if (err && err.code === 'GIT_UNAVAILABLE') {
+      throw err;
+    }
+    branchCount = null;
+  }
+
+  let remotes = [];
+  try {
+    const remoteOutput = await runGitCommand(['remote', '-v'], absolutePath);
+    remotes = parseGitRemoteOutput(remoteOutput);
+  } catch (err) {
+    if (err && err.code === 'GIT_UNAVAILABLE') {
+      throw err;
+    }
+    remotes = [];
+  }
+
+  const detectedAt = Date.now();
+  statements.upsertGitMetadata.run({
+    entry_path: relativePath,
+    detected_at: detectedAt,
+    current_branch: currentBranch || null,
+    commit_count: commitCount,
+    branch_count: branchCount,
+    remote_count: remotes.length,
+    remotes: JSON.stringify(remotes)
+  });
+
+  return {
+    isRepo: true,
+    detectedAt,
+    currentBranch: currentBranch || null,
+    commitCount,
+    branchCount,
+    remoteCount: remotes.length,
+    remotes
+  };
+}
+
+async function updateGitMetadataForDirectory(absolutePath, relativePath) {
+  const relPath = relativePath || normalizeRelative(absolutePath);
+  if (!relPath) {
+    return null;
+  }
+  if (relPath !== '/' && path.basename(relPath) === '.git') {
+    return null;
+  }
+  const key = relPath;
+  if (pendingGitMetadataUpdates.has(key)) {
+    return pendingGitMetadataUpdates.get(key);
+  }
+  const absolute = absolutePath || absoluteFromRelative(relPath);
+  const promise = (async () => {
+    try {
+      return await gatherGitMetadata(absolute, key);
+    } catch (err) {
+      if (err && err.code === 'GIT_UNAVAILABLE') {
+        return null;
+      }
+      if (err && err.message) {
+        console.warn(`Failed to update git metadata for ${key}: ${err.message}`);
+      }
+      return null;
+    } finally {
+      pendingGitMetadataUpdates.delete(key);
+    }
+  })();
+  pendingGitMetadataUpdates.set(key, promise);
+  return promise;
+}
+
+async function refreshGitMetadataForPath(relativePath) {
+  const repoPath = repoPathFromGitInternal(relativePath);
+  if (!repoPath) {
+    return;
+  }
+  const absolute = absoluteFromRelative(repoPath);
+  await updateGitMetadataForDirectory(absolute, repoPath);
+}
+
+function parseRemotesJson(raw) {
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((entry) => ({
+        name: entry && entry.name ? String(entry.name) : '',
+        fetchUrl: entry && entry.fetchUrl ? String(entry.fetchUrl) : null,
+        pushUrl: entry && entry.pushUrl ? String(entry.pushUrl) : null
+      }))
+      .filter((entry) => Boolean(entry.name));
+  } catch (_err) {
+    return [];
+  }
+}
+
+function buildGitInfoForEntry(entry) {
+  if (!entry || entry.type !== 'directory') {
+    return null;
+  }
+  const cached = gitCacheByPath.get(entry.path);
+  if (!cached) {
+    return { isRepo: false };
+  }
+  const remotes = Array.isArray(cached.remotes)
+    ? cached.remotes.map((remote) => ({
+      name: remote.name,
+      fetchUrl: remote.fetchUrl || null,
+      pushUrl: remote.pushUrl || null
+    }))
+    : [];
+  const remoteCount = typeof cached.remoteCount === 'number' ? cached.remoteCount : remotes.length;
+  return {
+    isRepo: true,
+    detectedAt: cached.detectedAt || null,
+    currentBranch: cached.currentBranch || null,
+    commitCount: typeof cached.commitCount === 'number' ? cached.commitCount : null,
+    branchCount: typeof cached.branchCount === 'number' ? cached.branchCount : null,
+    remoteCount,
+    isLocalOnly: remoteCount === 0,
+    remotes
+  };
+}
+
 async function scanInitialTree() {
   const seen = new Set();
   async function walk(absolutePath) {
@@ -219,6 +588,11 @@ async function scanInitialTree() {
     const entry = entryFromStats(relativePath, stats);
     statements.upsertEntry.run(entry);
     if (stats.isDirectory()) {
+      await updateGitMetadataForDirectory(absolutePath, relativePath);
+    } else {
+      await refreshGitMetadataForPath(relativePath);
+    }
+    if (stats.isDirectory()) {
       let children;
       try {
         children = await fsp.readdir(absolutePath);
@@ -235,16 +609,33 @@ async function scanInitialTree() {
 }
 
 function refreshCaches() {
-  entryCache = statements.allEntries.all().map((row) => ({
-    path: row.path,
-    name: row.name,
-    parent_path: row.parent_path,
-    type: row.type,
-    size: row.size,
-    mtime: row.mtime,
-    extension: row.extension,
-    depth: row.depth
-  }));
+  const gitRows = statements.allGitMetadata.all();
+  gitCacheByPath = new Map();
+  for (const row of gitRows) {
+    gitCacheByPath.set(row.entry_path, {
+      detectedAt: row.detected_at || null,
+      currentBranch: row.current_branch || null,
+      commitCount: typeof row.commit_count === 'number' ? row.commit_count : null,
+      branchCount: typeof row.branch_count === 'number' ? row.branch_count : null,
+      remoteCount: typeof row.remote_count === 'number' ? row.remote_count : 0,
+      remotes: parseRemotesJson(row.remotes)
+    });
+  }
+
+  entryCache = statements.allEntries.all().map((row) => {
+    const entry = {
+      path: row.path,
+      name: row.name,
+      parent_path: row.parent_path,
+      type: row.type,
+      size: row.size,
+      mtime: row.mtime,
+      extension: row.extension,
+      depth: row.depth
+    };
+    entry.git = buildGitInfoForEntry(entry);
+    return entry;
+  });
   entryFuse = new Fuse(entryCache, {
     keys: ['path', 'name'],
     threshold: 0.3,
@@ -276,7 +667,7 @@ function listTagsForPath(relativePath) {
   return statements.entryTags.all(relativePath);
 }
 
-function deleteEntryBranch(relativePath) {
+async function deleteEntryBranch(relativePath) {
   if (relativePath === '/' || !relativePath) {
     return;
   }
@@ -288,6 +679,7 @@ function deleteEntryBranch(relativePath) {
     statements.removeEntriesUnder.run(pattern);
   });
   deleteBranch();
+  await refreshGitMetadataForPath(relativePath);
 }
 
 async function indexPath(absolutePath) {
@@ -306,10 +698,16 @@ async function indexPath(absolutePath) {
   const relativePath = normalizeRelative(absolutePath);
   const entry = entryFromStats(relativePath, stats);
   statements.upsertEntry.run(entry);
+  if (stats.isDirectory()) {
+    await updateGitMetadataForDirectory(absolutePath, relativePath);
+  } else {
+    statements.deleteGitMetadata.run(relativePath);
+    await refreshGitMetadataForPath(relativePath);
+  }
   return true;
 }
 
-function removePath(relativePath) {
+async function removePath(relativePath) {
   const pattern = `${relativePath}/%`;
   const remove = db.transaction(() => {
     statements.deleteTagsForEntry.run(relativePath);
@@ -318,6 +716,7 @@ function removePath(relativePath) {
     statements.removeEntriesUnder.run(pattern);
   });
   remove();
+  await refreshGitMetadataForPath(relativePath);
 }
 
 function buildTree() {
@@ -332,6 +731,7 @@ function buildTree() {
       mtime: entry.mtime,
       extension: entry.extension,
       depth: entry.depth,
+      git: buildGitInfoForEntry(entry),
       tags: listTagsForPath(entry.path),
       children: []
     });
@@ -424,11 +824,13 @@ function gatherSearchResults({ query, tagFilters }) {
     }
     return list.map((entry) => ({
       ...entry,
+      git: buildGitInfoForEntry(entry),
       tags: listTagsForPath(entry.path)
     }));
   }
   return candidates.slice(0, 50).map((entry) => ({
     ...entry,
+    git: buildGitInfoForEntry(entry),
     tags: listTagsForPath(entry.path)
   }));
 }
@@ -509,7 +911,8 @@ app.get('/api/entry', (req, res) => {
   res.json({
     entry: {
       ...entry,
-      tags: listTagsForPath(relativePath)
+      tags: listTagsForPath(relativePath),
+      git: buildGitInfoForEntry(entry)
     }
   });
 });
@@ -543,82 +946,178 @@ app.delete('/api/tags', (req, res) => {
   res.json({ success: true });
 });
 
-const watcher = new chokidar.FSWatcher({
-  persistent: true,
-  ignoreInitial: true,
-  ignorePermissionErrors: true,
-  awaitWriteFinish: {
-    stabilityThreshold: 200,
-    pollInterval: 100
-  },
-  ignored: (watchPath) => {
-    const absolute = path.isAbsolute(watchPath) ? watchPath : path.join(START_PATH, watchPath);
-    return shouldIgnorePath(absolute);
-  }
-});
+function buildWatcherOptions(extra = {}) {
+  return {
+    persistent: true,
+    ignoreInitial: true,
+    ignorePermissionErrors: true,
+    awaitWriteFinish: {
+      stabilityThreshold: 200,
+      pollInterval: 100
+    },
+    ignored: (watchPath) => {
+      const absolute = path.isAbsolute(watchPath) ? watchPath : path.join(START_PATH, watchPath);
+      return shouldIgnorePath(absolute);
+    },
+    ...extra
+  };
+}
 
-watcher.on('error', (err) => {
+let watcher = null;
+let watcherMode = 'native';
+let watcherSwitchPromise = null;
+let watcherErrorDiagnosticsLogged = false;
+
+function registerWatcherEvents(instance) {
+  instance.on('error', (err) => {
+    handleWatcherError(err, instance);
+  });
+  instance.on('add', async (filePath) => {
+    if (instance !== watcher) {
+      return;
+    }
+    if (!await indexPath(filePath)) {
+      return;
+    }
+    refreshCaches();
+    broadcast({ type: 'entry-added', path: normalizeRelative(filePath) });
+  });
+  instance.on('change', async (filePath) => {
+    if (instance !== watcher) {
+      return;
+    }
+    if (!await indexPath(filePath)) {
+      return;
+    }
+    refreshCaches();
+    broadcast({ type: 'entry-updated', path: normalizeRelative(filePath) });
+  });
+  instance.on('unlink', async (filePath) => {
+    if (instance !== watcher) {
+      return;
+    }
+    if (shouldIgnorePath(filePath)) {
+      return;
+    }
+    const relativePath = normalizeRelative(filePath);
+    await removePath(relativePath);
+    refreshCaches();
+    broadcast({ type: 'entry-removed', path: relativePath });
+  });
+  instance.on('addDir', async (dirPath) => {
+    if (instance !== watcher) {
+      return;
+    }
+    if (!await indexPath(dirPath)) {
+      return;
+    }
+    refreshCaches();
+    broadcast({ type: 'entry-added', path: normalizeRelative(dirPath) });
+  });
+  instance.on('unlinkDir', async (dirPath) => {
+    if (instance !== watcher) {
+      return;
+    }
+    if (shouldIgnorePath(dirPath)) {
+      return;
+    }
+    const relativePath = normalizeRelative(dirPath);
+    await deleteEntryBranch(relativePath);
+    refreshCaches();
+    broadcast({ type: 'entry-removed', path: relativePath });
+  });
+}
+
+function isWatcherLimitError(err) {
+  if (!err) {
+    return false;
+  }
+  const code = typeof err.code === 'string' ? err.code.toUpperCase() : '';
+  if (code === 'EMFILE' || code === 'ENOSPC') {
+    return true;
+  }
+  const message = typeof err.message === 'string' ? err.message.toUpperCase() : '';
+  return message.includes('EMFILE') || message.includes('ENOSPC');
+}
+
+function handleWatcherError(err, instance) {
+  if (instance !== watcher) {
+    return;
+  }
+  if (!watcherErrorDiagnosticsLogged) {
+    console.warn('File watcher encountered an error', {
+      code: err && err.code,
+      message: err && err.message
+    });
+    watcherErrorDiagnosticsLogged = true;
+  }
   if (err && UNSUPPORTED_FS_CODES.has(err.code)) {
     const targetPath = err.path;
     if (targetPath) {
       markPathUnsupported(targetPath);
-      watcher.unwatch(targetPath);
+      instance.unwatch(targetPath);
     }
     console.warn('Skipping unsupported filesystem entry', targetPath || err.message);
     return;
   }
+  if (isWatcherLimitError(err)) {
+    if (watcherMode !== 'polling') {
+      console.warn('File watcher limit reached; switching to polling mode.');
+      switchWatcherMode('polling').catch((switchErr) => {
+        console.error('Failed to switch watcher mode', switchErr);
+      });
+    } else {
+      console.warn('File watcher limit reached even in polling mode. Consider increasing the file descriptor limit.');
+    }
+    return;
+  }
   console.error('File watcher error', err);
-});
+}
 
-watcher.on('add', async (filePath) => {
-  if (!await indexPath(filePath)) {
+async function switchWatcherMode(mode) {
+  if (mode === watcherMode && watcher) {
     return;
   }
-  refreshCaches();
-  broadcast({ type: 'entry-added', path: normalizeRelative(filePath) });
-});
-
-watcher.on('change', async (filePath) => {
-  if (!await indexPath(filePath)) {
-    return;
+  if (watcherSwitchPromise) {
+    return watcherSwitchPromise;
   }
-  refreshCaches();
-  broadcast({ type: 'entry-updated', path: normalizeRelative(filePath) });
-});
-
-watcher.on('unlink', (filePath) => {
-  if (shouldIgnorePath(filePath)) {
-    return;
-  }
-  const relativePath = normalizeRelative(filePath);
-  removePath(relativePath);
-  refreshCaches();
-  broadcast({ type: 'entry-removed', path: relativePath });
-});
-
-watcher.on('addDir', async (dirPath) => {
-  if (!await indexPath(dirPath)) {
-    return;
-  }
-  refreshCaches();
-  broadcast({ type: 'entry-added', path: normalizeRelative(dirPath) });
-});
-
-watcher.on('unlinkDir', (dirPath) => {
-  if (shouldIgnorePath(dirPath)) {
-    return;
-  }
-  const relativePath = normalizeRelative(dirPath);
-  deleteEntryBranch(relativePath);
-  refreshCaches();
-  broadcast({ type: 'entry-removed', path: relativePath });
-});
-
-watcher.add(START_PATH);
+  watcherSwitchPromise = (async () => {
+    const oldWatcher = watcher;
+    watcher = null;
+    if (oldWatcher) {
+      oldWatcher.removeAllListeners();
+      try {
+        await oldWatcher.close();
+      } catch (closeErr) {
+        console.warn('Failed to close previous watcher', closeErr);
+      }
+    }
+    const extraOptions = mode === 'polling'
+      ? { usePolling: true, interval: 5_000, binaryInterval: 7_500 }
+      : {};
+    const newWatcher = new chokidar.FSWatcher(buildWatcherOptions(extraOptions));
+    registerWatcherEvents(newWatcher);
+    watcher = newWatcher;
+    watcherMode = mode;
+    try {
+      await newWatcher.add(START_PATH);
+    } catch (addErr) {
+      console.error('Failed to initialize file watcher', addErr);
+      throw addErr;
+    }
+    if (mode === 'polling') {
+      console.warn('Watcher running in polling mode (5s interval). Consider raising the file descriptor limit for better performance.');
+    }
+  })().finally(() => {
+    watcherSwitchPromise = null;
+  });
+  return watcherSwitchPromise;
+}
 
 async function bootstrap() {
   await scanInitialTree();
   refreshCaches();
+  await switchWatcherMode('native');
   server.listen(PORT, () => {
     console.log(`better-filexplorer running at http://localhost:${PORT}`);
     console.log(`Monitoring ${START_PATH}`);
@@ -634,7 +1133,11 @@ let shuttingDown = false;
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  watcher.close().catch(() => {});
+  const currentWatcher = watcher;
+  watcher = null;
+  if (currentWatcher) {
+    currentWatcher.close().catch(() => {});
+  }
   server.close(() => process.exit(0));
 }
 
