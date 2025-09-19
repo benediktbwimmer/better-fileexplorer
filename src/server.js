@@ -919,7 +919,12 @@ function buildSuggestions(queryRaw) {
 
 app.get('/api/tree', (_req, res) => {
   const tree = buildTree();
-  res.json({ root: tree, rootName: path.basename(START_PATH), generatedAt: Date.now() });
+  res.json({
+    root: tree,
+    rootName: path.basename(START_PATH),
+    rootPath: START_PATH,
+    generatedAt: Date.now()
+  });
 });
 
 app.get('/api/search', (req, res) => {

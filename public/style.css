@@ -21,6 +21,10 @@ body {
   min-height: 100vh;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .app-header {
   display: flex;
   align-items: center;
@@ -170,9 +174,21 @@ body {
   font-weight: 600;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
+  color: var(--text-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.panel-title {
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--text-soft);
+}
+
+.panel-meta {
+  font-size: 0.75rem;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .tree {

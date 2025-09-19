@@ -2,6 +2,7 @@
   const state = {
     tree: null,
     rootName: '',
+    rootPath: '',
     expanded: new Set(['/']),
     selectedPath: null,
     filters: [],
@@ -29,6 +30,7 @@
     suggestions: document.getElementById('suggestions'),
     filters: document.getElementById('activeFilters'),
     tree: document.getElementById('tree'),
+    filesystemMeta: document.getElementById('filesystemMeta'),
     entryMeta: document.getElementById('entryMeta'),
     tagSection: document.getElementById('tagSection'),
     tagList: document.getElementById('tagList'),
@@ -55,6 +57,26 @@
   function setStatus(message) {
     if (els.status) {
       els.status.textContent = message;
+    }
+  }
+
+  function updateFilesystemMeta() {
+    if (!els.filesystemMeta) {
+      return;
+    }
+    const segments = [];
+    if (state.rootName) {
+      segments.push(state.rootName);
+    }
+    if (state.rootPath) {
+      segments.push(`Mounted at ${state.rootPath}`);
+    }
+    if (segments.length === 0) {
+      els.filesystemMeta.textContent = '';
+      els.filesystemMeta.classList.add('hidden');
+    } else {
+      els.filesystemMeta.textContent = segments.join(' • ');
+      els.filesystemMeta.classList.remove('hidden');
     }
   }
 
@@ -347,6 +369,8 @@
       const data = await fetchJSON('/api/tree');
       state.tree = data.root || null;
       state.rootName = data.rootName || '';
+      state.rootPath = data.rootPath || '';
+      updateFilesystemMeta();
       const available = new Set();
       if (state.tree) {
         collectPaths(state.tree, available);
