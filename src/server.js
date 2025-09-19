@@ -139,7 +139,7 @@ const statements = {
 let entryCache = [];
 let entryFuse = new Fuse([], { keys: ['path', 'name'], threshold: 0.3, ignoreLocation: true });
 let tagCache = [];
-let tagFuse = new Fuse([], { keys: ['key', 'value', 'pair'], threshold: 0.3, ignoreLocation: true });
+let tagFuse = new Fuse([], { keys: ['key', 'value', 'pair'], threshold: 0.3, ignoreLocation: true, includeScore: true });
 let tagValuesByKey = new Map();
 let gitCacheByPath = new Map();
 const pendingGitMetadataUpdates = new Map();
@@ -652,7 +652,8 @@ function refreshCaches() {
   tagFuse = new Fuse(tagCache, {
     keys: ['pair', 'key', 'value'],
     threshold: 0.2,
-    ignoreLocation: true
+    ignoreLocation: true,
+    includeScore: true
   });
   tagValuesByKey = tagRows.reduce((map, row) => {
     if (!map.has(row.key)) {
@@ -1077,6 +1078,53 @@ app.get('/api/file/search', async (req, res) => {
   }));
 
   res.json({ matches });
+});
+
+app.get('/api/tags', (req, res) => {
+  const relativePath = typeof req.query.path === 'string' ? req.query.path : '';
+  if (relativePath) {
+    const entry = statements.singleEntry.get(relativePath);
+    if (!entry) {
+      res.status(404).json({ error: 'Entry not found' });
+      return;
+    }
+    const tags = listTagsForPath(relativePath).map((tag) => ({
+      path: relativePath,
+      key: tag.key,
+      value: tag.value
+    }));
+    res.json({ tags });
+    return;
+  }
+
+  const tags = tagCache.map((tag) => ({
+    path: tag.entry_path,
+    key: tag.key,
+    value: tag.value
+  }));
+  res.json({ tags });
+});
+
+app.get('/api/tags/search', (req, res) => {
+  const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (!query) {
+    res.status(400).json({ error: 'q query parameter required' });
+    return;
+  }
+
+  const rawLimit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : NaN;
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 20;
+
+  const fuseResults = tagFuse.search(query, { limit });
+  const results = fuseResults.map((result) => ({
+    path: result.item.entry_path,
+    key: result.item.key,
+    value: result.item.value,
+    pair: result.item.pair,
+    score: typeof result.score === 'number' ? result.score : null
+  }));
+
+  res.json({ results });
 });
 
 app.post('/api/tags', (req, res) => {
