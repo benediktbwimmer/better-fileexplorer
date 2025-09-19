@@ -256,6 +256,137 @@ body {
   font-size: 0.9rem;
 }
 
+#tagSection.hidden,
+.file-section.hidden,
+.file-search-results.hidden {
+  display: none;
+}
+
+.file-section {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.file-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.file-search-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.file-search-form input {
+  flex: 1;
+  padding: 0.4rem 0.55rem;
+  border-radius: 0.35rem;
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.file-search-form button[type="submit"] {
+  padding: 0.45rem 0.8rem;
+  border-radius: 0.4rem;
+  border: none;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.file-viewer {
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: rgba(24, 30, 54, 0.05);
+  max-height: 320px;
+  overflow: auto;
+}
+
+.file-content {
+  display: flex;
+  flex-direction: column;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  padding: 0.75rem;
+  gap: 0.1rem;
+}
+
+.file-message {
+  font-size: 0.85rem;
+  color: var(--text-soft);
+}
+
+.file-message.error {
+  color: var(--danger);
+}
+
+.file-line {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.file-line-number {
+  color: var(--text-soft);
+  text-align: right;
+  min-width: 3rem;
+  user-select: none;
+}
+
+.file-line-text {
+  white-space: pre;
+  word-break: break-word;
+}
+
+.file-line.highlight .file-line-text {
+  background: rgba(59, 130, 246, 0.2);
+  border-radius: 0.25rem;
+  padding: 0 0.2rem;
+}
+
+.file-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid rgba(24, 30, 54, 0.1);
+  border-radius: 0.5rem;
+  padding: 0.6rem;
+  background: rgba(24, 30, 54, 0.02);
+}
+
+.file-search-item {
+  display: grid;
+  gap: 0.2rem;
+  cursor: pointer;
+  border-radius: 0.4rem;
+  padding: 0.4rem 0.5rem;
+}
+
+.file-search-item:hover {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.file-search-item .line-label {
+  font-size: 0.75rem;
+  color: var(--text-soft);
+}
+
+.file-search-item .snippet {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .entry-meta .path {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   background: rgba(24, 30, 54, 0.08);

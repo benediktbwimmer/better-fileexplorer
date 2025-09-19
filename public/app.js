@@ -8,7 +8,20 @@
     suggestions: [],
     suggestionIndex: -1,
     searchQuery: '',
-    searchResults: []
+    searchResults: [],
+    entryRequestToken: 0,
+    fileStreamAbort: null,
+    fileStreamPath: null,
+    fileStreamActiveToken: null,
+    fileRemainder: '',
+    fileLineCount: 0,
+    fileHighlightLines: new Set(),
+    fileSearchRequestId: 0,
+    fileSearchResults: [],
+    fileSearchQuery: '',
+    fileSearchLoading: false,
+    fileSearchError: '',
+    pendingScrollLine: null
   };
 
   const els = {
@@ -24,6 +37,12 @@
     tagValueInput: document.getElementById('tagValueInput'),
     tagFeedback: document.getElementById('tagFeedback'),
     refreshTags: document.getElementById('refreshTags'),
+    fileSection: document.getElementById('fileSection'),
+    fileContent: document.getElementById('fileContent'),
+    fileSearchForm: document.getElementById('fileSearchForm'),
+    fileSearchInput: document.getElementById('fileSearchInput'),
+    fileSearchClear: document.getElementById('fileSearchClear'),
+    fileSearchResults: document.getElementById('fileSearchResults'),
     results: document.getElementById('searchResults'),
     status: document.getElementById('statusMessage')
   };
@@ -74,6 +93,243 @@
       return '—';
     }
     return value.toLocaleString();
+  }
+
+  function cancelFileStream() {
+    if (state.fileStreamAbort) {
+      try {
+        state.fileStreamAbort.abort();
+      } catch (err) {
+        console.warn('Failed to abort file stream', err);
+      }
+    }
+    state.fileStreamAbort = null;
+    state.fileStreamActiveToken = null;
+    state.fileStreamPath = null;
+  }
+
+  function clearFileViewer() {
+    if (els.fileContent) {
+      els.fileContent.innerHTML = '';
+    }
+    state.fileRemainder = '';
+    state.fileLineCount = 0;
+    state.pendingScrollLine = null;
+  }
+
+  function resetFileSearchState({ clearQuery } = { clearQuery: true }) {
+    state.fileSearchResults = [];
+    state.fileSearchError = '';
+    state.fileHighlightLines.clear();
+    state.fileSearchLoading = false;
+    state.fileSearchRequestId = 0;
+    state.pendingScrollLine = null;
+    state.fileSearchQuery = '';
+    if (clearQuery && els.fileSearchInput) {
+      els.fileSearchInput.value = '';
+    }
+    if (els.fileSearchResults) {
+      els.fileSearchResults.innerHTML = '';
+      els.fileSearchResults.classList.add('hidden');
+    }
+  }
+
+  function hideFileSection() {
+    cancelFileStream();
+    clearFileViewer();
+    resetFileSearchState({ clearQuery: true });
+    if (els.fileSection) {
+      els.fileSection.classList.add('hidden');
+    }
+  }
+
+  function showFileSection() {
+    if (els.fileSection) {
+      els.fileSection.classList.remove('hidden');
+    }
+  }
+
+  function showFileViewerMessage(message, isError = false) {
+    if (!els.fileContent) return;
+    els.fileContent.innerHTML = '';
+    const div = document.createElement('div');
+    div.className = 'file-message';
+    div.textContent = message;
+    if (isError) {
+      div.classList.add('error');
+    }
+    els.fileContent.appendChild(div);
+  }
+
+  function findLineElement(lineNumber) {
+    if (!els.fileContent) return null;
+    return els.fileContent.querySelector(`[data-line="${lineNumber}"]`);
+  }
+
+  function applyHighlightState() {
+    if (!els.fileContent) return;
+    const activeLines = state.fileHighlightLines;
+    els.fileContent.querySelectorAll('.file-line.highlight').forEach((line) => {
+      const value = Number(line.dataset.line);
+      if (!activeLines.has(value)) {
+        line.classList.remove('highlight');
+      }
+    });
+    activeLines.forEach((lineNumber) => {
+      const lineEl = findLineElement(lineNumber);
+      if (lineEl) {
+        lineEl.classList.add('highlight');
+      }
+    });
+  }
+
+  function maybeScrollToPendingLine() {
+    if (!state.pendingScrollLine) {
+      return;
+    }
+    const lineEl = findLineElement(state.pendingScrollLine);
+    if (lineEl) {
+      lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      state.pendingScrollLine = null;
+    }
+  }
+
+  function scrollToLine(lineNumber) {
+    if (typeof lineNumber !== 'number') {
+      return;
+    }
+    state.pendingScrollLine = lineNumber;
+    maybeScrollToPendingLine();
+  }
+
+  function appendLines(lines) {
+    if (!els.fileContent || !Array.isArray(lines) || !lines.length) {
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    for (const text of lines) {
+      const lineNumber = state.fileLineCount + 1;
+      state.fileLineCount = lineNumber;
+      const lineRow = document.createElement('div');
+      lineRow.className = 'file-line';
+      lineRow.dataset.line = String(lineNumber);
+
+      const number = document.createElement('span');
+      number.className = 'file-line-number';
+      number.textContent = String(lineNumber);
+
+      const content = document.createElement('span');
+      content.className = 'file-line-text';
+      content.textContent = text.length ? text : ' ';
+
+      if (state.fileHighlightLines.has(lineNumber)) {
+        lineRow.classList.add('highlight');
+      }
+
+      lineRow.appendChild(number);
+      lineRow.appendChild(content);
+      fragment.appendChild(lineRow);
+    }
+    els.fileContent.appendChild(fragment);
+    maybeScrollToPendingLine();
+  }
+
+  function processFileChunk(text, { isFinal = false } = {}) {
+    const chunk = typeof text === 'string' ? text : '';
+    if (!chunk && !isFinal && !state.fileRemainder) {
+      return;
+    }
+    const combined = `${state.fileRemainder}${chunk}`;
+    if (!combined) {
+      state.fileRemainder = '';
+      return;
+    }
+    let pieces = combined.split(/\r\n|\n|\r/);
+    if (!isFinal) {
+      const remainder = pieces.pop();
+      state.fileRemainder = remainder !== undefined ? remainder : '';
+    } else {
+      state.fileRemainder = '';
+    }
+    if (pieces.length) {
+      appendLines(pieces);
+    }
+    if (isFinal && state.fileRemainder) {
+      appendLines([state.fileRemainder]);
+      state.fileRemainder = '';
+    }
+  }
+
+  async function startFileStreaming(path, entryToken) {
+    if (!path) {
+      return;
+    }
+    showFileSection();
+    cancelFileStream();
+    clearFileViewer();
+    resetFileSearchState({ clearQuery: false });
+    renderFileSearchResults();
+    const controller = new AbortController();
+    state.fileStreamAbort = controller;
+    state.fileStreamPath = path;
+    const streamToken = Symbol('stream');
+    state.fileStreamActiveToken = streamToken;
+    showFileViewerMessage('Loading file…');
+
+    try {
+      const response = await fetch(`/api/file/stream?path=${encodeURIComponent(path)}`, {
+        signal: controller.signal
+      });
+      if (state.fileStreamActiveToken !== streamToken || state.entryRequestToken !== entryToken) {
+        return;
+      }
+      if (!response.ok) {
+        const message = await response.text();
+        showFileViewerMessage(message || 'Failed to load file', true);
+        return;
+      }
+      const reader = response.body && response.body.getReader ? response.body.getReader() : null;
+      if (!reader) {
+        const text = await response.text();
+        showFileViewerMessage(text || 'Streaming not supported in this browser');
+        return;
+      }
+      const decoder = new TextDecoder();
+      let received = false;
+      clearFileViewer();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (state.fileStreamActiveToken !== streamToken || state.entryRequestToken !== entryToken) {
+          return;
+        }
+        if (done) {
+          const finalChunk = decoder.decode();
+          processFileChunk(finalChunk, { isFinal: true });
+          break;
+        }
+        const chunk = decoder.decode(value, { stream: true });
+        if (chunk) {
+          processFileChunk(chunk);
+          received = true;
+        }
+      }
+      if (state.fileLineCount === 0) {
+        showFileViewerMessage('File is empty.');
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        return;
+      }
+      console.error('File stream failed', err);
+      showFileViewerMessage(`Failed to load file: ${err.message}`, true);
+    } finally {
+      if (state.fileStreamActiveToken === streamToken) {
+        state.fileStreamAbort = null;
+        state.fileStreamActiveToken = null;
+        applyHighlightState();
+        maybeScrollToPendingLine();
+      }
+    }
   }
 
   function collectPaths(node, set) {
@@ -218,10 +474,21 @@
   }
 
   async function loadEntry(path) {
+    const requestToken = state.entryRequestToken + 1;
+    state.entryRequestToken = requestToken;
     try {
       const data = await fetchJSON(`/api/entry?path=${encodeURIComponent(path)}`);
+      if (state.entryRequestToken !== requestToken) {
+        return;
+      }
       lastEntry = data.entry;
       renderEntry(data.entry);
+      if (data.entry && data.entry.type === 'file') {
+        showFileSection();
+        void startFileStreaming(data.entry.path, requestToken);
+      } else {
+        hideFileSection();
+      }
     } catch (err) {
       console.error('Failed to load entry', err);
       lastEntry = null;
@@ -234,6 +501,7 @@
       els.entryMeta.classList.add('empty');
       els.entryMeta.innerHTML = error ? `Error: ${error}` : 'Select a file or directory.';
       els.tagSection.classList.add('hidden');
+      hideFileSection();
       return;
     }
 
@@ -356,6 +624,148 @@
       pill.appendChild(button);
       els.tagList.appendChild(pill);
     }
+  }
+
+  function renderFileSearchResults() {
+    if (!els.fileSearchResults) {
+      return;
+    }
+
+    const hasQuery = !!state.fileSearchQuery;
+    if (!hasQuery && !state.fileSearchLoading && !state.fileSearchError) {
+      els.fileSearchResults.classList.add('hidden');
+      els.fileSearchResults.innerHTML = '';
+      applyHighlightState();
+      return;
+    }
+
+    els.fileSearchResults.classList.remove('hidden');
+    els.fileSearchResults.innerHTML = '';
+
+    if (state.fileSearchLoading) {
+      const loading = document.createElement('div');
+      loading.className = 'feedback';
+      loading.textContent = 'Searching…';
+      els.fileSearchResults.appendChild(loading);
+      return;
+    }
+
+    if (state.fileSearchError) {
+      const error = document.createElement('div');
+      error.className = 'feedback error';
+      error.textContent = state.fileSearchError;
+      els.fileSearchResults.appendChild(error);
+      applyHighlightState();
+      return;
+    }
+
+    if (!state.fileSearchResults.length) {
+      const empty = document.createElement('div');
+      empty.className = 'feedback';
+      empty.textContent = 'No matches found';
+      els.fileSearchResults.appendChild(empty);
+      applyHighlightState();
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const match of state.fileSearchResults) {
+      const item = document.createElement('div');
+      item.className = 'file-search-item';
+      item.dataset.line = String(match.line);
+
+      const label = document.createElement('div');
+      label.className = 'line-label';
+      label.textContent = `Line ${match.line}`;
+
+      const snippet = document.createElement('div');
+      snippet.className = 'snippet';
+      snippet.textContent = match.snippet || '';
+
+      item.appendChild(label);
+      item.appendChild(snippet);
+      item.addEventListener('click', () => {
+        scrollToLine(match.line);
+      });
+
+      fragment.appendChild(item);
+    }
+    els.fileSearchResults.appendChild(fragment);
+    applyHighlightState();
+  }
+
+  async function runFileSearch(query) {
+    if (!state.selectedPath) {
+      return;
+    }
+    const trimmed = (query || '').trim();
+    if (!trimmed) {
+      state.fileSearchQuery = '';
+      state.fileHighlightLines.clear();
+      state.fileSearchResults = [];
+      state.fileSearchError = '';
+      renderFileSearchResults();
+      applyHighlightState();
+      return;
+    }
+
+    if (els.fileSearchInput) {
+      els.fileSearchInput.value = trimmed;
+    }
+
+    const requestId = state.fileSearchRequestId + 1;
+    state.fileSearchRequestId = requestId;
+    state.fileSearchQuery = trimmed;
+    state.fileSearchLoading = true;
+    state.fileSearchError = '';
+    state.fileHighlightLines.clear();
+    renderFileSearchResults();
+
+    const path = state.selectedPath;
+    try {
+      const data = await fetchJSON(`/api/file/search?path=${encodeURIComponent(path)}&q=${encodeURIComponent(trimmed)}`);
+      if (state.fileSearchRequestId !== requestId || state.selectedPath !== path) {
+        return;
+      }
+      const matches = Array.isArray(data.matches) ? data.matches : [];
+      state.fileSearchResults = matches;
+      state.fileHighlightLines = new Set(matches.map((match) => match.line));
+      state.pendingScrollLine = matches.length ? matches[0].line : null;
+    } catch (err) {
+      if (state.fileSearchRequestId !== requestId) {
+        return;
+      }
+      console.error('File search failed', err);
+      state.fileSearchResults = [];
+      state.fileHighlightLines.clear();
+      state.pendingScrollLine = null;
+      state.fileSearchError = `Search failed: ${err.message}`;
+    } finally {
+      if (state.fileSearchRequestId === requestId) {
+        state.fileSearchLoading = false;
+        renderFileSearchResults();
+        applyHighlightState();
+        maybeScrollToPendingLine();
+      }
+    }
+  }
+
+  async function handleFileSearchSubmit(event) {
+    event.preventDefault();
+    if (!els.fileSearchInput) {
+      return;
+    }
+    const query = els.fileSearchInput.value.trim();
+    await runFileSearch(query);
+  }
+
+  async function handleFileSearchClear(event) {
+    if (event) {
+      event.preventDefault();
+    }
+    resetFileSearchState({ clearQuery: true });
+    renderFileSearchResults();
+    applyHighlightState();
   }
 
   async function removeTag(tag) {
@@ -715,6 +1125,21 @@
         await loadEntry(state.selectedPath);
       }
     });
+
+    if (els.fileSearchForm) {
+      els.fileSearchForm.addEventListener('submit', handleFileSearchSubmit);
+    }
+    if (els.fileSearchClear) {
+      els.fileSearchClear.addEventListener('click', handleFileSearchClear);
+    }
+    if (els.fileSearchInput) {
+      els.fileSearchInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          handleFileSearchClear(event);
+          els.fileSearchInput.blur();
+        }
+      });
+    }
   }
 
   async function bootstrap() {

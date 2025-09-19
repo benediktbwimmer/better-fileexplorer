@@ -835,6 +835,43 @@ function gatherSearchResults({ query, tagFilters }) {
   }));
 }
 
+function buildFileSnippet(lineText, query) {
+  const text = typeof lineText === 'string' ? lineText : String(lineText || '');
+  const trimmedQuery = (query || '').trim();
+  const MAX_LENGTH = 240;
+  if (!text) {
+    return '';
+  }
+  const normalizedText = text.replace(/\t/g, '    ');
+  if (!trimmedQuery) {
+    if (normalizedText.length <= MAX_LENGTH) {
+      return normalizedText;
+    }
+    return `${normalizedText.slice(0, MAX_LENGTH - 1)}…`;
+  }
+  const lowerText = normalizedText.toLowerCase();
+  const lowerQuery = trimmedQuery.toLowerCase();
+  const index = lowerText.indexOf(lowerQuery);
+  if (index === -1) {
+    if (normalizedText.length <= MAX_LENGTH) {
+      return normalizedText;
+    }
+    return `${normalizedText.slice(0, MAX_LENGTH - 1)}…`;
+  }
+  const preContext = 60;
+  const postContext = 120;
+  const start = Math.max(0, index - preContext);
+  const end = Math.min(normalizedText.length, index + lowerQuery.length + postContext);
+  let snippet = normalizedText.slice(start, end);
+  if (start > 0) {
+    snippet = `…${snippet}`;
+  }
+  if (end < normalizedText.length) {
+    snippet = `${snippet}…`;
+  }
+  return snippet;
+}
+
 function buildSuggestions(queryRaw) {
   const query = (queryRaw || '').trim();
   if (!query) {
@@ -915,6 +952,131 @@ app.get('/api/entry', (req, res) => {
       git: buildGitInfoForEntry(entry)
     }
   });
+});
+
+app.get('/api/file/stream', async (req, res) => {
+  const relativePath = typeof req.query.path === 'string' ? req.query.path : '';
+  if (!relativePath) {
+    res.status(400).json({ error: 'path query parameter required' });
+    return;
+  }
+  const entry = statements.singleEntry.get(relativePath);
+  if (!entry) {
+    res.status(404).json({ error: 'File not found' });
+    return;
+  }
+  if (entry.type !== 'file') {
+    res.status(400).json({ error: 'Requested path is not a file' });
+    return;
+  }
+
+  const absolute = absoluteFromRelative(relativePath);
+  let stats;
+  try {
+    stats = await fsp.stat(absolute);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      res.status(404).json({ error: 'File not found' });
+      return;
+    }
+    if (err && UNSUPPORTED_FS_CODES.has(err.code)) {
+      res.status(403).json({ error: 'File cannot be read on this filesystem' });
+      return;
+    }
+    console.error(`Failed to stat file for streaming ${absolute}: ${err.message}`);
+    res.status(500).json({ error: 'Failed to read file' });
+    return;
+  }
+
+  if (!stats.isFile()) {
+    res.status(400).json({ error: 'Requested path is not a regular file' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  if (typeof stats.size === 'number') {
+    res.setHeader('Content-Length', String(stats.size));
+  }
+  res.setHeader('X-File-Path', relativePath);
+  res.setHeader('X-File-Mtime', String(stats.mtimeMs ? Math.round(stats.mtimeMs) : Date.now()));
+
+  const stream = fs.createReadStream(absolute, { encoding: 'utf8', highWaterMark: 64 * 1024 });
+  stream.on('error', (err) => {
+    if (err && UNSUPPORTED_FS_CODES.has(err.code)) {
+      if (!res.headersSent) {
+        res.status(403).json({ error: 'File cannot be read on this filesystem' });
+      } else {
+        res.destroy(err);
+      }
+      return;
+    }
+    console.error(`Stream error while sending ${absolute}: ${err.message}`);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to stream file' });
+    } else {
+      res.destroy(err);
+    }
+  });
+
+  stream.pipe(res);
+});
+
+app.get('/api/file/search', async (req, res) => {
+  const relativePath = typeof req.query.path === 'string' ? req.query.path : '';
+  const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (!relativePath) {
+    res.status(400).json({ error: 'path query parameter required' });
+    return;
+  }
+  if (!query) {
+    res.status(400).json({ error: 'q query parameter required' });
+    return;
+  }
+
+  const entry = statements.singleEntry.get(relativePath);
+  if (!entry) {
+    res.status(404).json({ error: 'File not found' });
+    return;
+  }
+  if (entry.type !== 'file') {
+    res.status(400).json({ error: 'Requested path is not a file' });
+    return;
+  }
+
+  const absolute = absoluteFromRelative(relativePath);
+  let content;
+  try {
+    content = await fsp.readFile(absolute, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      res.status(404).json({ error: 'File not found' });
+      return;
+    }
+    if (err && UNSUPPORTED_FS_CODES.has(err.code)) {
+      res.status(403).json({ error: 'File cannot be read on this filesystem' });
+      return;
+    }
+    console.error(`Failed to read file for search ${absolute}: ${err.message}`);
+    res.status(500).json({ error: 'Failed to read file' });
+    return;
+  }
+
+  const lines = content.split(/\r\n|\n|\r/);
+  const items = lines.map((text, index) => ({ line: index + 1, text }));
+  const fuse = new Fuse(items, {
+    keys: ['text'],
+    threshold: 0.4,
+    ignoreLocation: true,
+    includeScore: true
+  });
+  const fuseResults = fuse.search(query, { limit: 50 });
+  const matches = fuseResults.map((result) => ({
+    line: result.item.line,
+    score: typeof result.score === 'number' ? result.score : null,
+    snippet: buildFileSnippet(result.item.text, query)
+  }));
+
+  res.json({ matches });
 });
 
 app.post('/api/tags', (req, res) => {

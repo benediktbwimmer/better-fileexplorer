@@ -96,6 +96,85 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/file/stream:
+    get:
+      summary: Stream file contents as UTF-8 text
+      tags: [Files]
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: Path of the file relative to the monitored root.
+      responses:
+        '200':
+          description: File content streamed as UTF-8 text
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: Chunked UTF-8 text stream of the file contents.
+        '400':
+          description: The requested path was missing or not a file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The file cannot be read from the underlying filesystem
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: File does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/file/search:
+    get:
+      summary: Fuzzy search within a single file
+      tags: [Files]
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: Path of the file (relative to the monitored root) to inspect.
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+          description: Fuzzy search query to match against individual lines.
+      responses:
+        '200':
+          description: Matching lines ordered by similarity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileSearchResponse'
+        '400':
+          description: Missing path or query parameter, or path not a file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: File exists but cannot be read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: File does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/tags:
     post:
       summary: Attach a tag to an entry
@@ -212,6 +291,30 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/GitRemote'
+    FileSearchMatch:
+      type: object
+      required: [line, snippet]
+      properties:
+        line:
+          type: integer
+          format: int64
+          description: 1-based line number containing the match.
+        snippet:
+          type: string
+          description: Context snippet for the line.
+        score:
+          type: number
+          format: float
+          nullable: true
+          description: Fuzzy match score where smaller values indicate closer matches.
+    FileSearchResponse:
+      type: object
+      required: [matches]
+      properties:
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileSearchMatch'
           description: Remote definitions reported by `git remote -v`.
     Entry:
       type: object

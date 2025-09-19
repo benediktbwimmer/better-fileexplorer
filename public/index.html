@@ -34,6 +34,25 @@
         <div class="panel-header">Details</div>
         <div id="details">
           <div id="entryMeta" class="entry-meta empty">Select a file or directory.</div>
+          <div id="fileSection" class="file-section hidden">
+            <div class="file-header">
+              <span>File Preview</span>
+              <form id="fileSearchForm" class="file-search-form">
+                <input
+                  id="fileSearchInput"
+                  type="text"
+                  placeholder="Fuzzy search in file"
+                  autocomplete="off"
+                />
+                <button type="submit">Search</button>
+                <button id="fileSearchClear" type="button" class="secondary-button">Clear</button>
+              </form>
+            </div>
+            <div id="fileViewer" class="file-viewer">
+              <div id="fileContent" class="file-content"></div>
+            </div>
+            <div id="fileSearchResults" class="file-search-results hidden"></div>
+          </div>
           <div id="tagSection" class="tags hidden">
             <div class="tag-header">
               <span>Tags</span>
