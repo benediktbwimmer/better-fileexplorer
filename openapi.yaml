@@ -1,0 +1,295 @@
+openapi: 3.1.0
+info:
+  title: Better Filexplorer API
+  version: 1.0.0
+  description: |
+    HTTP interface for the Better Filexplorer service. The API exposes read operations
+    for the indexed filesystem tree plus endpoints for managing per-path tags.
+servers:
+  - url: http://localhost:4174
+    description: Local development server
+paths:
+  /api/tree:
+    get:
+      summary: Retrieve the indexed file tree
+      tags: [Entries]
+      responses:
+        '200':
+          description: Snapshot of the current in-memory tree
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TreeResponse'
+  /api/search:
+    get:
+      summary: Search indexed entries
+      tags: [Search]
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          description: Optional fuzzy search query evaluated against entry names and paths.
+        - in: query
+          name: tags
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+              pattern: '^[^:]+:.+$'
+          description: |
+            Optional filters expressed as `key:value`. Repeat the parameter or comma-separate
+            values to require entries that match all listed tags.
+      responses:
+        '200':
+          description: Search results (maximum 50)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResultsResponse'
+  /api/suggestions:
+    get:
+      summary: Suggest query completions
+      tags: [Search]
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          description: Partial search text to complete; when omitted, top directory suggestions are returned.
+      responses:
+        '200':
+          description: Suggested filters and paths
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuggestionsResponse'
+  /api/entry:
+    get:
+      summary: Retrieve a single entry by relative path
+      tags: [Entries]
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: Path relative to the monitored root (use `/` for the root itself).
+      responses:
+        '200':
+          description: Entry found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntryResponse'
+        '400':
+          description: Missing path parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Entry does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/tags:
+    post:
+      summary: Attach a tag to an entry
+      tags: [Tags]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifyTagRequest'
+      responses:
+        '200':
+          description: Tag stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Entry not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Remove a tag from an entry
+      tags: [Tags]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifyTagRequest'
+      responses:
+        '200':
+          description: Tag removed (idempotent)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    Tag:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+          description: Tag namespace identifier.
+        value:
+          type: string
+          description: Tag value.
+    Entry:
+      type: object
+      required: [path, name, parent_path, type, size, mtime, extension, depth]
+      properties:
+        path:
+          type: string
+          description: Path relative to the monitored root.
+        name:
+          type: string
+          description: Display name of the entry.
+        parent_path:
+          type: string
+          nullable: true
+          description: Parent path or null for the root entry.
+        type:
+          type: string
+          enum: [file, directory]
+          description: Entry classification.
+        size:
+          type: integer
+          format: int64
+          nullable: true
+          description: Size in bytes for files; null for directories.
+        mtime:
+          type: integer
+          format: int64
+          description: Last modified time in milliseconds since the UNIX epoch.
+        extension:
+          type: string
+          description: Lowercase file extension without the leading dot; empty for directories.
+        depth:
+          type: integer
+          description: Depth from the root (root is 0).
+    EntryWithTags:
+      allOf:
+        - $ref: '#/components/schemas/Entry'
+        - type: object
+          required: [tags]
+          properties:
+            tags:
+              type: array
+              items:
+                $ref: '#/components/schemas/Tag'
+              description: Tags currently attached to the entry.
+    TreeNode:
+      allOf:
+        - $ref: '#/components/schemas/EntryWithTags'
+        - type: object
+          required: [children]
+          properties:
+            children:
+              type: array
+              items:
+                $ref: '#/components/schemas/TreeNode'
+              description: Immediate child entries sorted by type then name.
+    TreeResponse:
+      type: object
+      required: [root, rootName, generatedAt]
+      properties:
+        root:
+          oneOf:
+            - $ref: '#/components/schemas/TreeNode'
+            - type: 'null'
+          description: Full tree rooted at `/`; null if the index is empty.
+        rootName:
+          type: string
+          description: Display name for the root directory being monitored.
+        generatedAt:
+          type: integer
+          format: int64
+          description: Millisecond timestamp when the tree snapshot was created.
+    SearchResultsResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntryWithTags'
+          description: Entries that match the query and tag filters.
+    SuggestionsResponse:
+      type: object
+      required: [suggestions]
+      properties:
+        suggestions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Suggestion'
+          description: Up to ten suggestions based on the provided input.
+    Suggestion:
+      type: object
+      required: [type, value]
+      properties:
+        type:
+          type: string
+          enum: [path, tag, tagKey]
+          description: Suggestion category.
+        value:
+          type: string
+          description: Suggested token to append to the query.
+    EntryResponse:
+      type: object
+      required: [entry]
+      properties:
+        entry:
+          $ref: '#/components/schemas/EntryWithTags'
+    ModifyTagRequest:
+      type: object
+      required: [path, key, value]
+      properties:
+        path:
+          type: string
+          description: Relative path identifying the entry to tag.
+        key:
+          type: string
+          description: Tag key to set or remove.
+        value:
+          type: string
+          description: Tag value to set or remove.
+    SuccessResponse:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          const: true
+          description: Indicates the request completed without error.
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.

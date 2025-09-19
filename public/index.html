@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>better-filexplorer</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="title">better-filexplorer</div>
+      <div class="search-stack">
+        <div class="search-row">
+          <input
+            id="searchInput"
+            type="text"
+            placeholder="Search paths or tags (e.g. notes, type:pdf)"
+            autocomplete="off"
+          />
+        </div>
+        <div id="suggestions" class="suggestions hidden"></div>
+        <div id="activeFilters" class="filters"></div>
+      </div>
+      <div class="header-actions">
+        <a class="secondary-button" href="/docs" rel="noopener">API Docs</a>
+      </div>
+    </header>
+    <main class="layout">
+      <section class="panel tree-panel">
+        <div class="panel-header">Filesystem</div>
+        <div id="tree" class="tree"></div>
+      </section>
+      <section class="panel details-panel">
+        <div class="panel-header">Details</div>
+        <div id="details">
+          <div id="entryMeta" class="entry-meta empty">Select a file or directory.</div>
+          <div id="tagSection" class="tags hidden">
+            <div class="tag-header">
+              <span>Tags</span>
+              <button id="refreshTags" class="secondary-button">Refresh</button>
+            </div>
+            <div id="tagList" class="tag-list"></div>
+            <form id="tagForm" class="tag-form">
+              <input id="tagKeyInput" type="text" placeholder="key" autocomplete="off" />
+              <span>:</span>
+              <input id="tagValueInput" type="text" placeholder="value" autocomplete="off" />
+              <button type="submit">Add</button>
+            </form>
+            <div id="tagFeedback" class="feedback"></div>
+          </div>
+        </div>
+        <div class="panel-header">Search Results</div>
+        <div id="searchResults" class="results"></div>
+      </section>
+    </main>
+    <div class="status-bar">
+      <span id="statusMessage">Ready</span>
+    </div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
