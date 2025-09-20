@@ -81,6 +81,8 @@ db.exec(`
     extension TEXT,
     depth INTEGER NOT NULL
   );
+  CREATE INDEX IF NOT EXISTS idx_entries_depth_name
+    ON entries(depth, name COLLATE NOCASE);
   CREATE TABLE tags (
     id INTEGER PRIMARY KEY,
     entry_path TEXT NOT NULL,
@@ -89,6 +91,8 @@ db.exec(`
     UNIQUE(entry_path, key, value),
     FOREIGN KEY(entry_path) REFERENCES entries(path) ON DELETE CASCADE
   );
+  CREATE INDEX IF NOT EXISTS idx_tags_key_value
+    ON tags(key, value, entry_path);
   CREATE TABLE git_metadata (
     entry_path TEXT PRIMARY KEY,
     detected_at INTEGER NOT NULL,
