@@ -26,6 +26,10 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(PUBLIC_DIR));
 
+app.get('/healthz', (_req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
 app.get('/openapi.yaml', (_req, res, next) => {
   res.type('application/yaml');
   res.sendFile(OPENAPI_SPEC_PATH, (err) => {
