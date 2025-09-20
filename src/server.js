@@ -154,6 +154,7 @@ let gitCacheByPath = new Map();
 const pendingGitMetadataUpdates = new Map();
 let gitBinaryUnavailable = false;
 let gitUnavailableLogged = false;
+let hierarchyStatsByPath = new Map();
 const UNSUPPORTED_FS_CODES = new Set(['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EACCES', 'ENAMETOOLONG']);
 const unsupportedPaths = new Set();
 
@@ -680,6 +681,31 @@ async function scanInitialTree() {
   await walk(START_PATH);
 }
 
+function computeHierarchyStats(entries) {
+  const statsByPath = new Map();
+  const sorted = [...entries].sort((a, b) => b.depth - a.depth);
+  for (const entry of sorted) {
+    const existing = statsByPath.get(entry.path) || { totalSize: 0, fileCount: 0 };
+    let totalSize = existing.totalSize;
+    let fileCount = existing.fileCount;
+    if (entry.type === 'file') {
+      const size = typeof entry.size === 'number' ? entry.size : 0;
+      totalSize += Number.isFinite(size) ? size : 0;
+      fileCount += 1;
+    }
+    const current = { totalSize, fileCount };
+    statsByPath.set(entry.path, current);
+    const parentPath = entry.parent_path;
+    if (parentPath) {
+      const parentStats = statsByPath.get(parentPath) || { totalSize: 0, fileCount: 0 };
+      parentStats.totalSize += current.totalSize;
+      parentStats.fileCount += current.fileCount;
+      statsByPath.set(parentPath, parentStats);
+    }
+  }
+  return statsByPath;
+}
+
 function refreshCaches() {
   const gitRows = statements.allGitMetadata.all();
   gitCacheByPath = new Map();
@@ -708,6 +734,7 @@ function refreshCaches() {
     entry.git = buildGitInfoForEntry(entry);
     return entry;
   });
+  hierarchyStatsByPath = computeHierarchyStats(entryCache);
   entryFuse = new Fuse(entryCache, {
     keys: ['path', 'name'],
     threshold: 0.3,
@@ -796,6 +823,9 @@ function buildTree() {
   const entries = statements.allEntries.all();
   const nodes = new Map();
   for (const entry of entries) {
+    const stats = hierarchyStatsByPath.get(entry.path);
+    const aggregatedSize = stats ? stats.totalSize : (entry.type === 'file' && typeof entry.size === 'number' ? entry.size : 0);
+    const aggregatedFiles = stats ? stats.fileCount : (entry.type === 'file' ? 1 : 0);
     nodes.set(entry.path, {
       path: entry.path,
       name: entry.path === '/' ? path.basename(START_PATH) : entry.name,
@@ -804,6 +834,8 @@ function buildTree() {
       mtime: entry.mtime,
       extension: entry.extension,
       depth: entry.depth,
+      totalSize: aggregatedSize,
+      fileCount: aggregatedFiles,
       git: buildGitInfoForEntry(entry),
       tags: listTagsForPath(entry.path),
       children: []
@@ -1023,9 +1055,14 @@ app.get('/api/entry', (req, res) => {
     res.status(404).json({ error: 'Not found' });
     return;
   }
+  const stats = hierarchyStatsByPath.get(relativePath);
+  const totalSize = stats ? stats.totalSize : (entry.type === 'file' && typeof entry.size === 'number' ? entry.size : 0);
+  const fileCount = stats ? stats.fileCount : (entry.type === 'file' ? 1 : 0);
   res.json({
     entry: {
       ...entry,
+      totalSize,
+      fileCount,
       tags: listTagsForPath(relativePath),
       git: buildGitInfoForEntry(entry)
     }
