@@ -4,79 +4,139 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>better-filexplorer</title>
+    <link rel="stylesheet" href="/tailwind.css" />
     <link rel="stylesheet" href="/style.css" />
   </head>
-  <body>
-    <header class="app-header">
-      <div class="title">better-filexplorer</div>
-      <div class="search-stack">
-        <div class="search-row">
-          <input
-            id="searchInput"
-            type="text"
-            placeholder="Search paths or tags (e.g. notes, type:pdf)"
-            autocomplete="off"
-          />
+  <body class="min-h-screen bg-neutral-100 text-neutral-900 antialiased transition-colors dark:bg-neutral-950 dark:text-neutral-100">
+    <div class="flex min-h-screen flex-col">
+      <header class="app-header sticky top-0 z-10 flex flex-col gap-4 border-b border-neutral-200 bg-white/90 px-6 py-5 backdrop-blur transition-colors dark:border-neutral-800 dark:bg-neutral-900/80 md:flex-row md:items-center md:gap-6">
+        <div class="flex items-center justify-between gap-3 md:justify-start">
+          <div class="title text-lg font-semibold tracking-tight">better-filexplorer</div>
+          <a
+            class="secondary-button inline-flex items-center rounded-full border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 transition hover:border-neutral-300 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:text-neutral-100 md:hidden"
+            href="/docs"
+            rel="noopener"
+          >
+            API Docs
+          </a>
         </div>
-        <div id="suggestions" class="suggestions hidden"></div>
-        <div id="activeFilters" class="filters"></div>
-      </div>
-      <div class="header-actions">
-        <a class="secondary-button" href="/docs" rel="noopener">API Docs</a>
-      </div>
-    </header>
-    <main class="layout">
-      <section class="panel tree-panel">
-        <div class="panel-header">
-          <span class="panel-title">Filesystem</span>
-          <span id="filesystemMeta" class="panel-meta hidden"></span>
-        </div>
-        <div id="tree" class="tree"></div>
-      </section>
-      <section class="panel details-panel">
-        <div class="panel-header"><span class="panel-title">Details</span></div>
-        <div id="details">
-          <div id="entryMeta" class="entry-meta empty">Select a file or directory.</div>
-          <div id="fileSection" class="file-section hidden">
-            <div class="file-header">
-              <span>File Preview</span>
-              <form id="fileSearchForm" class="file-search-form">
-                <input
-                  id="fileSearchInput"
-                  type="text"
-                  placeholder="Fuzzy search in file"
-                  autocomplete="off"
-                />
-                <button type="submit">Search</button>
-                <button id="fileSearchClear" type="button" class="secondary-button">Clear</button>
-              </form>
-            </div>
-            <div id="fileViewer" class="file-viewer">
-              <div id="fileContent" class="file-content"></div>
-            </div>
-            <div id="fileSearchResults" class="file-search-results hidden"></div>
+        <div class="search-stack relative flex-1">
+          <div class="search-row flex items-center gap-2">
+            <input
+              id="searchInput"
+              type="text"
+              placeholder="Search paths or tags (e.g. notes, type:pdf)"
+              autocomplete="off"
+              class="w-full rounded-2xl border border-neutral-300 bg-white/80 px-4 py-2.5 text-sm text-neutral-700 shadow-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/40 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+            />
           </div>
-          <div id="tagSection" class="tags hidden">
-            <div class="tag-header">
-              <span>Tags</span>
-              <button id="refreshTags" class="secondary-button">Refresh</button>
-            </div>
-            <div id="tagList" class="tag-list"></div>
-            <form id="tagForm" class="tag-form">
-              <input id="tagKeyInput" type="text" placeholder="key" autocomplete="off" />
-              <span>:</span>
-              <input id="tagValueInput" type="text" placeholder="value" autocomplete="off" />
-              <button type="submit">Add</button>
-            </form>
-            <div id="tagFeedback" class="feedback"></div>
-          </div>
+          <div
+            id="suggestions"
+            class="suggestions absolute left-0 right-0 top-full z-20 mt-2 hidden overflow-hidden rounded-2xl border border-neutral-200 bg-white/95 shadow-xl backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95"
+          ></div>
+          <div id="activeFilters" class="filters mt-2 flex flex-wrap items-center gap-2"></div>
         </div>
-        <div class="panel-header"><span class="panel-title">Search Results</span></div>
-        <div id="searchResults" class="results"></div>
-      </section>
-    </main>
-    <div class="status-bar">
-      <span id="statusMessage">Ready</span>
+        <div class="header-actions hidden items-center gap-3 md:flex">
+          <a
+            class="secondary-button inline-flex items-center justify-center rounded-full border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-600 transition hover:border-neutral-300 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:text-neutral-100"
+            href="/docs"
+            rel="noopener"
+          >
+            API Docs
+          </a>
+        </div>
+      </header>
+      <main class="layout grid flex-1 gap-6 px-6 pb-10 pt-6 md:grid-cols-[320px,1fr]">
+        <section class="panel tree-panel flex min-h-0 flex-col rounded-2xl border border-neutral-200 bg-white/80 shadow-sm backdrop-blur transition-colors dark:border-neutral-800 dark:bg-neutral-900/60">
+          <div class="panel-header border-b border-neutral-200 px-5 py-4 text-xs font-semibold uppercase tracking-[0.32em] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+            <span class="panel-title block text-[0.65rem] tracking-[0.32em] text-neutral-500 dark:text-neutral-400">Filesystem</span>
+            <span id="filesystemMeta" class="panel-meta hidden pt-2 text-[0.72rem] font-medium normal-case tracking-normal text-neutral-400 dark:text-neutral-500"></span>
+          </div>
+          <div id="tree" class="tree flex-1 overflow-y-auto p-4"></div>
+        </section>
+        <section class="panel details-panel flex min-h-0 flex-col gap-6 rounded-2xl border border-neutral-200 bg-white/80 shadow-sm backdrop-blur transition-colors dark:border-neutral-800 dark:bg-neutral-900/60">
+          <div class="space-y-6 px-5 pt-5">
+            <div class="panel-header border-b border-neutral-200 px-0 pb-4 text-xs font-semibold uppercase tracking-[0.32em] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+              <span class="panel-title block text-[0.65rem] tracking-[0.32em] text-neutral-500 dark:text-neutral-400">Details</span>
+            </div>
+            <div id="details" class="space-y-6">
+              <div id="entryMeta" class="entry-meta empty rounded-2xl border border-dashed border-neutral-300 bg-white/70 p-4 text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900/40 dark:text-neutral-400">
+                Select a file or directory.
+              </div>
+              <div id="fileSection" class="file-section hidden space-y-4">
+                <div class="file-header flex flex-wrap items-center justify-between gap-3">
+                  <span class="text-sm font-semibold text-neutral-700 dark:text-neutral-100">File Preview</span>
+                  <form id="fileSearchForm" class="file-search-form flex flex-wrap items-center gap-2 text-sm">
+                    <input
+                      id="fileSearchInput"
+                      type="text"
+                      placeholder="Fuzzy search in file"
+                      autocomplete="off"
+                      class="w-48 rounded-xl border border-neutral-300 bg-white/70 px-3 py-2 text-sm text-neutral-700 shadow-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/40 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-100"
+                    />
+                    <button type="submit" class="rounded-full bg-neutral-900 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200">
+                      Search
+                    </button>
+                    <button
+                      id="fileSearchClear"
+                      type="button"
+                      class="secondary-button inline-flex items-center justify-center rounded-full border border-neutral-200 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-neutral-600 transition hover:border-neutral-300 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:text-neutral-100"
+                    >
+                      Clear
+                    </button>
+                  </form>
+                </div>
+                <div id="fileViewer" class="file-viewer rounded-2xl border border-neutral-200 bg-neutral-50/80 p-4 text-sm shadow-inner dark:border-neutral-800 dark:bg-neutral-950/60">
+                  <div id="fileContent" class="file-content font-mono text-xs leading-relaxed text-neutral-700 dark:text-neutral-300"></div>
+                </div>
+                <div id="fileSearchResults" class="file-search-results hidden space-y-2"></div>
+              </div>
+              <div id="tagSection" class="tags hidden space-y-4">
+                <div class="tag-header flex flex-wrap items-center justify-between gap-2">
+                  <span class="text-sm font-semibold text-neutral-700 dark:text-neutral-100">Tags</span>
+                  <button
+                    id="refreshTags"
+                    class="secondary-button inline-flex items-center justify-center rounded-full border border-neutral-200 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-neutral-600 transition hover:border-neutral-300 hover:text-neutral-900 dark:border-neutral-700 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:text-neutral-100"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <div id="tagList" class="tag-list flex flex-wrap gap-2"></div>
+                <form id="tagForm" class="tag-form flex flex-wrap items-center gap-2 text-sm">
+                  <input
+                    id="tagKeyInput"
+                    type="text"
+                    placeholder="key"
+                    autocomplete="off"
+                    class="h-9 rounded-lg border border-neutral-300 bg-white/70 px-3 text-sm text-neutral-700 shadow-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/40 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-100"
+                  />
+                  <span class="text-neutral-400 dark:text-neutral-500">:</span>
+                  <input
+                    id="tagValueInput"
+                    type="text"
+                    placeholder="value"
+                    autocomplete="off"
+                    class="h-9 rounded-lg border border-neutral-300 bg-white/70 px-3 text-sm text-neutral-700 shadow-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/40 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-100"
+                  />
+                  <button type="submit" class="rounded-full bg-neutral-900 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200">
+                    Add
+                  </button>
+                </form>
+                <div id="tagFeedback" class="feedback text-sm text-neutral-500 dark:text-neutral-400"></div>
+              </div>
+            </div>
+          </div>
+          <div class="px-5">
+            <div class="panel-header border-b border-neutral-200 px-0 pb-4 text-xs font-semibold uppercase tracking-[0.32em] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+              <span class="panel-title block text-[0.65rem] tracking-[0.32em] text-neutral-500 dark:text-neutral-400">Search Results</span>
+            </div>
+            <div id="searchResults" class="results mt-5 space-y-3 pb-6"></div>
+          </div>
+        </section>
+      </main>
+      <div class="status-bar border-t border-neutral-200 bg-white/80 px-6 py-3 text-sm text-neutral-500 backdrop-blur transition-colors dark:border-neutral-800 dark:bg-neutral-900/70 dark:text-neutral-400">
+        <span id="statusMessage">Ready</span>
+      </div>
     </div>
     <script src="/app.js" defer></script>
   </body>
