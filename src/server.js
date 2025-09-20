@@ -17,7 +17,8 @@ const GIT_MAX_BUFFER = 2 * 1024 * 1024;
 const WS_OPEN = 1;
 
 const PORT = parseInt(process.env.PORT, 10) || 4174;
-const START_PATH = path.resolve(process.env.START_PATH || process.cwd());
+const DEFAULT_WORKSPACE_PATH = path.resolve(process.env.WORKSPACE_MOUNT_PATH || '/workspace');
+const START_PATH = ensureStartPath(path.resolve(process.env.START_PATH || process.cwd()), DEFAULT_WORKSPACE_PATH);
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const OPENAPI_SPEC_PATH = path.join(__dirname, '..', 'openapi.yaml');
 const DOCS_PAGE_PATH = path.join(PUBLIC_DIR, 'docs.html');
@@ -198,6 +199,69 @@ function absoluteFromRelative(relativePath) {
     return START_PATH;
   }
   return path.join(START_PATH, ...relativePath.split('/'));
+}
+
+function ensureStartPath(configuredPath, fallbackPath) {
+  let stats;
+  try {
+    stats = fs.statSync(configuredPath);
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+
+  if (stats) {
+    if (!stats.isDirectory()) {
+      throw new Error(`START_PATH must reference a directory: ${configuredPath}`);
+    }
+    return configuredPath;
+  }
+
+  const resolvedFallback = path.resolve(fallbackPath);
+
+  if (path.resolve(configuredPath) === resolvedFallback) {
+    fs.mkdirSync(resolvedFallback, { recursive: true });
+    return configuredPath;
+  }
+  let fallbackStats;
+  try {
+    fallbackStats = fs.statSync(resolvedFallback);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      fs.mkdirSync(resolvedFallback, { recursive: true });
+    } else if (err) {
+      throw err;
+    }
+  }
+
+  if (fallbackStats && !fallbackStats.isDirectory()) {
+    throw new Error(`Fallback workspace path is not a directory: ${resolvedFallback}`);
+  }
+
+  const linkParent = path.dirname(configuredPath);
+  fs.mkdirSync(linkParent, { recursive: true });
+
+  const symlinkType = process.platform === 'win32' ? 'junction' : 'dir';
+  try {
+    fs.symlinkSync(resolvedFallback, configuredPath, symlinkType);
+    console.log(`[bootstrap] START_PATH ${configuredPath} missing; symlinked to ${resolvedFallback}`);
+  } catch (err) {
+    if (!err || err.code !== 'EEXIST') {
+      throw err;
+    }
+    try {
+      const currentTarget = fs.readlinkSync(configuredPath);
+      if (path.resolve(currentTarget) !== resolvedFallback) {
+        fs.unlinkSync(configuredPath);
+        fs.symlinkSync(resolvedFallback, configuredPath, symlinkType);
+      }
+    } catch (linkErr) {
+      throw linkErr;
+    }
+  }
+
+  return configuredPath;
 }
 
 function parentOf(relativePath) {
