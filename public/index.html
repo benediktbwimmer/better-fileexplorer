@@ -52,6 +52,20 @@
             <span class="panel-title block text-[0.65rem] tracking-[0.32em] text-neutral-500 dark:text-neutral-400">Filesystem</span>
             <span id="filesystemMeta" class="panel-meta hidden pt-2 text-[0.72rem] font-medium normal-case tracking-normal text-neutral-400 dark:text-neutral-500"></span>
           </div>
+          <div class="panel-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 px-5 py-3 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+            <label for="sortSelect" class="flex items-center gap-2 text-[0.72rem] font-medium tracking-wide text-neutral-500 dark:text-neutral-400">
+              Sort by
+              <select
+                id="sortSelect"
+                class="rounded-xl border border-neutral-300 bg-white/70 px-3 py-1.5 text-xs text-neutral-700 shadow-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/40 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-100"
+              >
+                <option value="name">Name (A–Z)</option>
+                <option value="size">Size (largest first)</option>
+                <option value="modified">Modified (newest first)</option>
+                <option value="files">Files (most first)</option>
+              </select>
+            </label>
+          </div>
           <div id="tree" class="tree flex-1 overflow-y-auto p-4"></div>
         </section>
         <section class="panel details-panel flex min-h-0 flex-col gap-6 rounded-2xl border border-neutral-200 bg-white/80 shadow-sm backdrop-blur transition-colors dark:border-neutral-800 dark:bg-neutral-900/60">

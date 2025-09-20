@@ -6,6 +6,7 @@
     expanded: new Set(['/']),
     selectedPath: null,
     filters: [],
+    sortOption: 'name',
     suggestions: [],
     suggestionIndex: -1,
     searchQuery: '',
@@ -30,6 +31,7 @@
     suggestions: document.getElementById('suggestions'),
     filters: document.getElementById('activeFilters'),
     tree: document.getElementById('tree'),
+    sortSelect: document.getElementById('sortSelect'),
     filesystemMeta: document.getElementById('filesystemMeta'),
     entryMeta: document.getElementById('entryMeta'),
     tagSection: document.getElementById('tagSection'),
@@ -364,6 +366,68 @@
     }
   }
 
+  function getNodeSize(node) {
+    if (!node) return 0;
+    if (typeof node.totalSize === 'number' && Number.isFinite(node.totalSize)) {
+      return node.totalSize;
+    }
+    if (typeof node.size === 'number' && Number.isFinite(node.size)) {
+      return node.size;
+    }
+    return 0;
+  }
+
+  function getNodeFileCount(node) {
+    if (!node) return 0;
+    if (typeof node.fileCount === 'number' && Number.isFinite(node.fileCount)) {
+      return node.fileCount;
+    }
+    return node.type === 'file' ? 1 : 0;
+  }
+
+  function compareNodes(a, b) {
+    if (a.type !== b.type) {
+      return a.type === 'directory' ? -1 : 1;
+    }
+    switch (state.sortOption) {
+      case 'size': {
+        const diff = getNodeSize(b) - getNodeSize(a);
+        if (diff !== 0) {
+          return diff;
+        }
+        break;
+      }
+      case 'modified': {
+        const aTime = typeof a.mtime === 'number' ? a.mtime : 0;
+        const bTime = typeof b.mtime === 'number' ? b.mtime : 0;
+        if (bTime !== aTime) {
+          return bTime - aTime;
+        }
+        break;
+      }
+      case 'files': {
+        const diff = getNodeFileCount(b) - getNodeFileCount(a);
+        if (diff !== 0) {
+          return diff;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+    return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+  }
+
+  function sortTreeNode(node) {
+    if (!node || !Array.isArray(node.children)) {
+      return;
+    }
+    node.children.sort(compareNodes);
+    for (const child of node.children) {
+      sortTreeNode(child);
+    }
+  }
+
   async function fetchTree() {
     try {
       const data = await fetchJSON('/api/tree');
@@ -402,6 +466,7 @@
       container.appendChild(empty);
       return;
     }
+    sortTreeNode(state.tree);
     container.appendChild(buildTreeList(state.tree));
   }
 
@@ -546,13 +611,21 @@
     els.entryMeta.appendChild(typeRow);
 
     const sizeRow = document.createElement('div');
-    sizeRow.innerHTML = `<strong>Size:</strong> ${entry.type === 'file' && typeof entry.size === 'number' ? formatBytes(entry.size) : '—'}`;
+    const aggregateSize = typeof entry.totalSize === 'number' ? entry.totalSize : (typeof entry.size === 'number' ? entry.size : null);
+    sizeRow.innerHTML = `<strong>Size:</strong> ${typeof aggregateSize === 'number' ? formatBytes(aggregateSize) : '—'}`;
     els.entryMeta.appendChild(sizeRow);
 
+    if (entry.type === 'directory') {
+      const countRow = document.createElement('div');
+      const fileCount = typeof entry.fileCount === 'number' ? entry.fileCount : 0;
+      countRow.innerHTML = `<strong>Files:</strong> ${formatInteger(fileCount)}`;
+      els.entryMeta.appendChild(countRow);
+    }
+
     const timeRow = document.createElement('div');
-   const date = entry.mtime ? new Date(entry.mtime) : null;
-   timeRow.innerHTML = `<strong>Modified:</strong> ${date ? date.toLocaleString() : '—'}`;
-   els.entryMeta.appendChild(timeRow);
+    const date = entry.mtime ? new Date(entry.mtime) : null;
+    timeRow.innerHTML = `<strong>Modified:</strong> ${date ? date.toLocaleString() : '—'}`;
+    els.entryMeta.appendChild(timeRow);
 
     renderGitMetadata(entry);
 
@@ -1162,6 +1235,13 @@
           handleFileSearchClear(event);
           els.fileSearchInput.blur();
         }
+      });
+    }
+    if (els.sortSelect) {
+      els.sortSelect.value = state.sortOption;
+      els.sortSelect.addEventListener('change', () => {
+        state.sortOption = els.sortSelect.value;
+        renderTree();
       });
     }
   }

@@ -442,6 +442,13 @@ components:
         depth:
           type: integer
           description: Depth from the root (root is 0).
+        totalSize:
+          type: integer
+          format: int64
+          description: Aggregate size in bytes including all descendant files. For files this matches `size`.
+        fileCount:
+          type: integer
+          description: Total number of files contained within the entry (files report 1).
         git:
           oneOf:
             - $ref: '#/components/schemas/GitMetadata'
